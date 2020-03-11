@@ -79,19 +79,22 @@ print('Engine loaded!')
 words = set(text)
 len(words)
 
+"""
 word_freq = {}
-for word in text:
-    word_freq[word] = word_freq.get(word, 0) + 1
+for _word in text:
+    word_freq[_word] = word_freq.get(_word, 0) + 1
 
 ignored_words = set()
 for k, v in word_freq.items():
     if word_freq[k] < MIN_WORDS_FREQ:
         ignored_words.add(k)
 
+
 print('Unique words before ignoring:', len(words))
 print('Ignoring words with frequency <', MIN_WORDS_FREQ)
 words = sorted(set(words) - ignored_words)
 print('Unique words after ignoring:', len(words))
+"""
 
 (lines, next_words) = build_sequences(text, words)
 
@@ -122,7 +125,9 @@ def generate_probas(preds, temperature):
 
 
 def get_word(prediction, temperature=1.0):
-    return rev[np.argmax(generate_probas(prediction, temperature))]
+    p = generate_probas(prediction, temperature)
+    mask = generate_stress_mask(words, 1)
+    return rev[np.argmax(np.dot(p, mask))]
 
 
 def generate_seq(model, tokenizer, seq_length, seed_text, n_words):
@@ -145,6 +150,45 @@ def generate_seq(model, tokenizer, seq_length, seed_text, n_words):
 def get_stress(word):
     return ENGINE.get_stresses(word)[0]
 
+
+def check_syllables(word, syllable_number):
+    vowels_pos = get_word_vowels(word)
+    if not vowels_pos:
+        return False
+    if syllable_number < 1 or syllable_number > len(vowels_pos):
+        return False
+    if get_stress(word) == vowels_pos[syllable_number - 1]:
+        return True
+
+
+def generate_stress_mask(words, syllable_number):
+    # TODO: add oneliner
+    res = np.zeros(len(words))
+    for i, word in enumerate(words):
+        if check_syllables(word, syllable_number):
+            res[tokenizer.word_index[word]] = 1
+    return res
+
+
+def get_word_vowels(word):
+    vowels = ['и', 'а', 'у', 'е', 'о', 'ы', 'ю', 'я', 'э', 'ё']
+    vowels_pos = []
+    for i, c in enumerate(word):
+        if c in vowels:
+            vowels_pos.append(i)
+    return vowels_pos
+
+
+def generate_syllables_count_mask(words, syllables_count):
+    # TODO: add oneliner
+    res = np.zeros(len(words))
+    for i, word in enumerate(words):
+        if len(get_word_vowels(word)) == syllables_count:
+            res[tokenizer.word_index[word]] = 1
+    return res
+
+#for word in words:
+#    print(tokenizer.word_index[word])
 
 
 # define model
@@ -171,7 +215,7 @@ def on_epoch_end(epoch, logs):
 model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
 print_callback = LambdaCallback(on_epoch_end=on_epoch_end)
 
-model.fit(X, y, batch_size=128, epochs=100, callbacks=[print_callback])
+model.fit(X, y, batch_size=128, epochs=10, callbacks=[print_callback])
 
 model.save('model.h5')
 # save the tokenizer
