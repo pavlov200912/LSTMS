@@ -31,6 +31,36 @@ SEQ_SIZE = 10
 ENGINE = None
 
 
+class MyTokenizer:
+    def __init__(self):
+        self.id_to_word = {}
+        self.word_to_id = {}
+        self.cleaner = clean_text
+        self.tokenizer = word_tokenize
+
+    def set_cleaner(self, cleaner):
+        self.cleaner = cleaner
+
+    def set_tokenizer(self, token_f):
+        self.tokenizer = token_f
+
+    def fit(self, text_to_fit):
+        text_to_fit = self.cleaner(text_to_fit)
+        tokens = set(word_tokenize(text_to_fit))
+        self.id_to_word = {i: v for i, v in enumerate(tokens)}
+        self.word_to_id = {v: i for i, v in enumerate(tokens)}
+
+    def text_to_seq(self, lines):
+        res = []
+        for line in lines:
+            line_res = []
+            tokens = self.tokenizer(line)
+            for word in tokens:
+                line_res.append(self.word_to_id[word])
+            res.append(line_res)
+        return res
+
+
 def clean_text(text):
     text = text.lower()
     return re.sub(r'[^А-Яа-я\s\n]', '', text)
@@ -61,10 +91,10 @@ with open('pushkin.txt', encoding='utf-8') as f:
     text = f.read()
 
 # TODO: DELETE THIS
-text = text[:10000]
+#text = text[:10000]
 
 text = clean_text(text)
-text = word_tokenize(text)  # ~100k words
+tokens = word_tokenize(text)  # ~100k words
 
 print('Loading engine...')
 
@@ -76,7 +106,7 @@ ENGINE.load('~/AutoPoetry/stress_ru.h5', '/home/sp/AutoPoetry/zaliznyak.txt')
 
 print('Engine loaded!')
 
-words = set(text)
+words = set(tokens)
 len(words)
 
 """
@@ -96,21 +126,23 @@ words = sorted(set(words) - ignored_words)
 print('Unique words after ignoring:', len(words))
 """
 
-(lines, next_words) = build_sequences(text, words)
+(lines, next_words) = build_sequences(tokens, words)
 
-tokenizer = Tokenizer()
-tokenizer.fit_on_texts(lines)
-sequences = tokenizer.texts_to_sequences(lines)
+
+tokenizer = MyTokenizer()
+tokenizer.fit(text)
+sequences = tokenizer.text_to_seq(lines) # That's important, that it's lines, not text
 # vocabulary size
-vocab_size = len(tokenizer.word_index) + 1
+vocab_size = len(tokenizer.word_to_id)
 
 # separate into input and output
 sequences = np.array(sequences)
 X, y = sequences[:, :-1], sequences[:, -1]
 y = to_categorical(y, num_classes=vocab_size)
 seq_length = X.shape[1]
+print(X.shape)
+print(y.shape)
 
-rev = dict(map(reversed, tokenizer.word_index.items()))
 
 
 def generate_probas(preds, temperature):
@@ -120,28 +152,30 @@ def generate_probas(preds, temperature):
     preds = np.log(preds) / temperature
     exp_preds = np.exp(preds)
     preds = exp_preds / np.sum(exp_preds)
-    probas = np.random.multinomial(1, preds, 1)  # Why multinomial?
-    return probas
+    #probas = np.random.multinomial(1, preds, 1)  # Why multinomial?
+    return preds
 
 
-def get_word(prediction, temperature=1.0):
+def get_word(prediction, mask, temperature=1.0):
     p = generate_probas(prediction, temperature)
-    mask = generate_stress_mask(words, 1)
-    return rev[np.argmax(np.dot(p, mask))]
+    return tokenizer.id_to_word[np.argmax(np.multiply(p, mask))]
 
 
-def generate_seq(model, tokenizer, seq_length, seed_text, n_words):
+def generate_seq(model, seq_length, seed_text, n_words):
     result = list()
     in_text = seed_text
     # generate a fixed number of words
+
+    mask = generate_stress_mask(words, 1)
     for _ in range(n_words):
         # encode the text as integer
-        encoded = tokenizer.texts_to_sequences([in_text])[0]
+        encoded = tokenizer.text_to_seq([in_text])[0]
         # truncate sequences to a fixed length
         encoded = pad_sequences([encoded], maxlen=seq_length, truncating='pre')
         # predict probabilities for each word
         prediction = model.predict(encoded)[0]
-        predicted_word = get_word(prediction)
+        print("I am asking for a word")
+        predicted_word = get_word(prediction, mask)
         result.append(predicted_word)
         in_text += ' ' + predicted_word
     return ' '.join(result)
@@ -165,9 +199,18 @@ def generate_stress_mask(words, syllable_number):
     # TODO: add oneliner
     res = np.zeros(len(words))
     for i, word in enumerate(words):
+        # TODO: This is a pure crutch. In case res[len(words)] why is this happening? idk
+        if i == len(words):
+            break
         if check_syllables(word, syllable_number):
-            res[tokenizer.word_index[word]] = 1
+            res[tokenizer.word_to_id[word]] = 1
     return res
+
+
+def print_words_on_mask(mask, words):
+    for i, val in enumerate(mask):
+        if val:
+            print(tokenizer.id_to_word[i])
 
 
 def get_word_vowels(word):
@@ -184,12 +227,12 @@ def generate_syllables_count_mask(words, syllables_count):
     res = np.zeros(len(words))
     for i, word in enumerate(words):
         if len(get_word_vowels(word)) == syllables_count:
-            res[tokenizer.word_index[word]] = 1
+            res[tokenizer.word_to_id[word]] = 1
     return res
 
-#for word in words:
-#    print(tokenizer.word_index[word])
 
+# for word in words:
+#    print(tokenizer.word_index[word])
 
 # define model
 model = Sequential()
@@ -207,7 +250,7 @@ def on_epoch_end(epoch, logs):
     print(seed_text + '\n')
 
     # generate new text
-    generated = generate_seq(model, tokenizer, seq_length, seed_text, 10)
+    generated = generate_seq(model, seq_length, seed_text, 10)
     print(f"On seed: {seed_text}\n Generated: {generated}\n")
 
 
@@ -215,7 +258,7 @@ def on_epoch_end(epoch, logs):
 model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
 print_callback = LambdaCallback(on_epoch_end=on_epoch_end)
 
-model.fit(X, y, batch_size=128, epochs=10, callbacks=[print_callback])
+model.fit(X, y, batch_size=128, epochs=100, callbacks=[print_callback])
 
 model.save('model.h5')
 # save the tokenizer
